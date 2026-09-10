@@ -45,7 +45,11 @@ impl Samples {
             pop2_nsam,
         }
     }
-    pub fn from_args(args: &Arguments, dgt: Option<&BcfGenotype>) -> Result<Self, Error> {
+    pub fn from_args(
+        args: &Arguments,
+        dgt1: Option<&BcfGenotype>,
+        dgt2: Option<&BcfGenotype>,
+    ) -> Result<Self, Error> {
         let mut s = String::new();
         // get bad samples
         let mut bad_samples = HashSet::<String>::new();
@@ -70,17 +74,32 @@ impl Samples {
         let mut m = HashMap::new();
         let mut pop1_nsam = 0u32;
         let mut pop2_nsam = 0u32;
-        match dgt {
-            Some(dgt) => {
+        match dgt1 {
+            Some(dgt1) => {
                 // get samples from the DominantGenotype Object
-                for s in dgt.get_samples() {
+                for s in dgt1.get_samples() {
                     if bad_samples.contains(s) {
                         continue;
                     }
+                    assert!(!m.contains_key(s), "duplicated sample names");
                     m.insert(s.to_owned(), v.len() as u32);
                     v.push(s.to_owned());
                     pop1_nsam += 1;
                 }
+                // samples of the second population, when a second bcf/bin file
+                // is given
+                if let Some(dgt2) = dgt2 {
+                    for s in dgt2.get_samples() {
+                        if bad_samples.contains(s) {
+                            continue;
+                        }
+                        assert!(!m.contains_key(s), "duplicated sample names");
+                        m.insert(s.to_owned(), v.len() as u32);
+                        v.push(s.to_owned());
+                        pop2_nsam += 1;
+                    }
+                }
+                assert_eq!(pop1_nsam + pop2_nsam, v.len() as u32);
             }
             None => {
                 // get samples from data headers
@@ -159,5 +178,5 @@ impl Samples {
 #[test]
 fn read_samples() {
     let args = Arguments::new_for_test();
-    Samples::from_args(&args, None).unwrap();
+    Samples::from_args(&args, None, None).unwrap();
 }

@@ -133,8 +133,17 @@ impl BcfGenotype {
         let header = reader.read_header()?;
         // .map_err(|e| bcf_reader::Error::ParseHeaderError(e))?;
         let mut record = Record::default();
+        // INFO, FILTER and FORMAT share a single string dictionary in the BCF
+        // format, so `##INFO=<ID=AD,..>` and `##FORMAT=<ID=AD,..>` carry the
+        // same IDX. A header declaring both, as written by `bcftools mpileup
+        // -a INFO/AD,FORMAT/AD`, therefore leaves one dictionary entry, whose
+        // dictionary name is the one of the header line that came last, and
+        // looking up "FORMAT" alone then finds nothing. The numeric key is the
+        // same for both, so the INFO entry can be used. Whether the records
+        // really carry FORMAT/AD is checked while reading them below.
         let ad_key = header
             .get_idx_from_dictionary_str("FORMAT", "AD")
+            .or_else(|| header.get_idx_from_dictionary_str("INFO", "AD"))
             .ok_or(Error::BcfMissingFormatADField)?;
         let mut chrname_map = HashMap::<String, usize>::new();
         for (id, dict) in header.dict_contigs().iter() {
@@ -161,6 +170,10 @@ impl BcfGenotype {
 
         let mut indv_ad = Vec::<(usize, u32)>::new(); // (allele_idx, ad)
         let mut allele_counts = Vec::<(usize, u32)>::new(); // (allele_idx, AC)
+        // number of records the allelic depths were read from, and whether any
+        // of them carried usable depths
+        let mut nrec_scanned = 0;
+        let mut any_ad_value_seen = false;
         while reader.read_record(&mut record).is_ok() {
             let nallele = record.n_allele() as usize;
 
@@ -177,6 +190,8 @@ impl BcfGenotype {
             }
 
             let mut site_nonmiss_counter = 0;
+            let gt_vec_len_before = self.gt_vec.len();
+            nrec_scanned += 1;
             let chunks = record.fmt_field(ad_key).chunks(record.n_allele() as usize);
             for (mut nv_indv, _) in chunks
                 .into_iter()
@@ -185,14 +200,23 @@ impl BcfGenotype {
             {
                 indv_ad.clear();
                 nv_indv.try_for_each(|nv_res| -> Result<()> {
-                    let val = nv_res?
-                        .int_val()
-                        .ok_or(bcf_reader::Error::NumericaValueEmptyInt)?;
+                    // a missing allelic depth, that is a '.' instead of a 0 for
+                    // one allele of one sample, is read as a depth of zero;
+                    // only this sample at this site is then likely to end up
+                    // without a dominant allele, instead of the whole run
+                    // failing
+                    let val = nv_res?.int_val().unwrap_or(0);
                     let idx = indv_ad.len();
                     indv_ad.push((idx, val));
                     Ok(())
                 })?;
                 // indv_ad.extend(nv_indv.map(|nv| nv?.int_val().unwrap()).enumerate());
+                if indv_ad.len() < 2 {
+                    // this record carries no allelic depths for this sample
+                    self.gt_vec.push(-1);
+                    continue;
+                }
+                any_ad_value_seen = true;
                 indv_ad.sort_by_key(|x| u32::MAX - x.1);
                 let mut dom_allele = -1i8;
                 let total = indv_ad.iter().map(|x| x.1).sum::<u32>();
@@ -208,6 +232,13 @@ impl BcfGenotype {
                     site_nonmiss_counter += 1;
                 }
                 self.gt_vec.push(dom_allele);
+            }
+            // a record without a FORMAT/AD field at all yields no genotype;
+            // keep the genotype matrix rectangular by treating the samples that
+            // are left as missing
+            if self.gt_vec.len() < gt_vec_len_before + nsam_in_targets {
+                self.gt_vec
+                    .resize(gt_vec_len_before + nsam_in_targets, -1i8);
             }
             let non_missing_rate = site_nonmiss_counter as f32 / nsam_in_targets as f32;
 
@@ -235,6 +266,10 @@ impl BcfGenotype {
             // if nrec % 1000 == 0 {
             //     eprintln!("\r{nrec}\t{nvalid}");
             // }
+        }
+        // the header can declare AD while the records carry it in INFO only
+        if (nrec_scanned > 0) && (!any_ad_value_seen) {
+            return Err(Error::BcfMissingFormatADField);
         }
         self.selected_samples.extend(0..self.sample_vec.len());
         self.selected_sites.extend(0..self.pos_vec.len());
@@ -665,8 +700,11 @@ impl BcfGenotype {
             .filter(|i| valid_samples.m().contains_key(&sample_vec[*i]))
             .collect_vec();
 
-        // build genotype
-        let n_valid_samples = valid_samples.v().len();
+        // build genotype: the number of columns is the number of samples of
+        // THIS genotype object that are valid, which is not necessarily all
+        // valid samples, as `valid_samples` can contain samples of a second
+        // population read from a different file
+        let n_valid_samples = valid_col.len();
         let mut geno1 = MatrixBuilder::<u8>::new(n_valid_samples);
 
         // dbg!(nsam, chr_vec.len(), nsam * chr_vec.len(), dom_vec.len());
@@ -792,6 +830,69 @@ fn get_bcf_gzip_reader(bcf_fname: &str) -> Result<BcfGzipReader> {
 }
 
 /// get indicators for target samples
+#[test]
+fn snp_check_covers_every_observed_allele() {
+    // 5 triallelic sites, every allele carried by two of the six samples; only
+    // the sites whose alleles are all SNPs may pass the filter
+    let bcf = "testdata/multiallelic/snpcheck_multiallelic.bcf";
+    let mut bcf_filter_args = BcfFilterArgs {
+        min_depth: 5,
+        min_ratio: 0.7,
+        min_r1_r2: 3.0,
+        min_maf: 0.01,
+        filter_column_pass_only: true,
+        major_minor_alleles_must_be_snps: true,
+        min_site_nonmissing: 0.3,
+        nonmissing_rates: vec![],
+        target_samples: None,
+    };
+
+    let bcf_gt = BcfGenotype::new_from_processing_bcf(
+        &crate::args::BcfReadMode::DominantAllele,
+        &bcf_filter_args,
+        bcf,
+    )
+    .unwrap();
+    // positions are the ones of the bcf records, which are 0-based
+    assert_eq!(bcf_gt.pos_vec, vec![999, 4999]);
+
+    // the filter can still be turned off
+    bcf_filter_args.major_minor_alleles_must_be_snps = false;
+    let bcf_gt = BcfGenotype::new_from_processing_bcf(
+        &crate::args::BcfReadMode::DominantAllele,
+        &bcf_filter_args,
+        bcf,
+    )
+    .unwrap();
+    assert_eq!(bcf_gt.pos_vec.len(), 5);
+}
+
+#[test]
+fn read_bcf_with_info_ad_and_missing_ad() {
+    // this test file declares both INFO/AD and FORMAT/AD, which share one entry
+    // of the bcf string dictionary, and carries a '.' instead of a depth for
+    // one sample of its first records
+    let bcf = "testdata/pf7_data/pf7_chr1_20samples_info_ad_dot_ad.bcf";
+    let bcf_filter_args =
+        BcfFilterArgs::new_from_toml_file("testdata/pf7_data/dom_gt_config.toml").unwrap();
+
+    let bcf_gt = BcfGenotype::new_from_processing_bcf(
+        &crate::args::BcfReadMode::DominantAllele,
+        &bcf_filter_args,
+        bcf,
+    )
+    .unwrap();
+
+    // the genotypes are read, and the samples with a missing allelic depth are
+    // the only ones dropped at those sites
+    assert!(!bcf_gt.get_samples().is_empty());
+    assert!(!bcf_gt.pos_vec.is_empty());
+    assert_eq!(
+        bcf_gt.gt_vec.len(),
+        bcf_gt.pos_vec.len() * bcf_gt.nsam_targeted
+    );
+}
+
 fn get_targeted_sample_indicator(
     args: &BcfFilterArgs,
     vcf_samples: &[String],
@@ -824,6 +925,11 @@ fn get_maf_and_sorted_allele_count(
 ) -> f32 {
     allele_counts.clear();
     allele_counts.resize(nallele, (0, 0));
+    // the allele index has to be stored, as the vector is sorted by count below
+    // and the callers use the index to find the allele of a count
+    for (allele_idx, e) in allele_counts.iter_mut().enumerate() {
+        e.0 = allele_idx;
+    }
     let mut tot_allele_counts = 0u32;
     for a in gt.iter() {
         let a = *a;
@@ -839,29 +945,54 @@ fn get_maf_and_sorted_allele_count(
     maf
 }
 
+/// Test whether the alleles observed at the current site are all SNPs
+///
+/// Every allele that is carried by at least one sample can end up in the
+/// genotype matrix, so all of them are compared against the major allele: an
+/// allele must have the length of the major allele, must not be a spanning
+/// deletion, and must differ from the major allele at no more than one
+/// position. Alleles that no sample carries cannot be genotypes and do not
+/// constrain the site. When fewer than two alleles are observed, the two most
+/// frequent alleles are compared, as before; such a site is dropped by the
+/// minor allele frequency test anyway.
+///
+/// `allele_counts` is sorted by decreasing count, so the observed alleles come
+/// first.
 fn is_major_and_minor_allele_snps(
     record: &bcf_reader::Record,
     allele_counts: &[(usize, u32)],
 ) -> bool {
-    let rngs = record.alleles();
-    let rng = &rngs[allele_counts[0].0];
-    let major_allele = &record.buf_shared()[rng.start..rng.end];
-    let rng = &rngs[allele_counts[1].0];
-    let minor_allele = &record.buf_shared()[rng.start..rng.end];
-    if (major_allele.len() != minor_allele.len())
-        || (major_allele[0] == b'*')
-        || (minor_allele[0] == b'*')
-        || (major_allele
-            .iter()
-            .zip(minor_allele.iter())
-            .map(|(a, b)| (a != b) as usize)
-            .sum::<usize>()
-            > 1)
-    {
-        false
-    } else {
-        true
+    if allele_counts.len() < 2 {
+        return false;
     }
+    let rngs = record.alleles();
+    let buf = record.buf_shared();
+
+    let n_observed = allele_counts.iter().filter(|(_, cnt)| *cnt > 0).count();
+    let n_checked = n_observed.max(2).min(allele_counts.len());
+
+    let rng = &rngs[allele_counts[0].0];
+    let major_allele = &buf[rng.start..rng.end];
+    if major_allele[0] == b'*' {
+        return false;
+    }
+
+    for (allele_idx, _cnt) in allele_counts[1..n_checked].iter() {
+        let rng = &rngs[*allele_idx];
+        let other_allele = &buf[rng.start..rng.end];
+        if (other_allele.len() != major_allele.len())
+            || (other_allele[0] == b'*')
+            || (major_allele
+                .iter()
+                .zip(other_allele.iter())
+                .map(|(a, b)| (a != b) as usize)
+                .sum::<usize>()
+                > 1)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// test if current site has no filter or pass filter

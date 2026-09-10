@@ -1,0 +1,77 @@
+# Ignore file for Dockerfile.local (BuildKit uses
+# <dockerfile>.dockerignore when it exists). Same as .dockerignore,
+# except that Cargo.lock is kept so the build uses the pinned
+# dependency versions.
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# C build artifacts
+*.o
+*.out
+*.exe
+c/hmmIBD
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Documentation
+*.md
+!README.md
+docs/
+LICENSE
+CITATION*
+
+# Test and sample data
+testdata/
+c/samp_data/
+*.txt
+*.bcf
+*.vcf
+*.vcf.gz
+*.bin
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# Python (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+env/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# OS files
+Thumbs.db
+.Trash-*
+
+# Backup files
+*.bak
+*.backup
+*~

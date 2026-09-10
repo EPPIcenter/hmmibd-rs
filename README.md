@@ -25,6 +25,16 @@ The hmmibd-rs program offers the following features:
   will utilize 'FORMAT/AD' to infer the dominant allele for each site/sample and
   use these dominant alleles as phased genotypes. Additionally, `hmmibd-rs` allows
   further filtering by sample and site missingness.
+- Allele Frequencies from a Subset of Samples: With `--freq-samples1` and
+  `--freq-samples2`, the allele frequencies can be calculated from a subset of
+  the samples, for instance a reference panel, while all samples are still
+  analyzed by the HMM. Unlike `-f/--freq-file1`, this does not require the sites
+  of a separate frequency file to match the sites the program keeps after
+  filtering.
+- Two Populations from BCF/binary Files: `-I/--data-file2` can be used together
+  with `--from-bcf` or `--from-bin`, not only with the text genotype format.
+  Each file is filtered on its own, and only the sites shared by the two
+  populations are analyzed.
 - Segment Filtering: This program can filter Identity by Descent (IBD) segments
   based on various criteria, including segment type (IBD/non-IBD), length in
   centimorgans (cM), and estimated Time to Most Recent Common Ancestor (TMRCA)
@@ -94,6 +104,17 @@ input data:
   -F, --freq-file2 <FREQ_FILE2>
           Optional: File of allele frequencies for the second population; same
           format as for -f
+      --freq-samples1 <FREQ_SAMPLES1>
+          Optional: File of sample ids used to restrict the calculation of
+          allele frequencies for the first population. Format: no header, one id
+          (string) per row. All samples of the genotype data are still analyzed;
+          only the allele frequencies are calculated from this subset of
+          samples. Sample ids that are not among the analyzed samples are
+          ignored with a warning. Cannot be used together with
+          `-f/--freq-file1`
+      --freq-samples2 <FREQ_SAMPLES2>
+          Optional: same as `--freq-samples1` but for the second population.
+          Cannot be used together with `-F/--freq-file2`
   -b, --bad-file <BAD_FILE>
           Optional: file of sample ids to exclude from all analysis. Format: no
           header, one id (string) per row. Note: b stands for "bad samples"
@@ -251,7 +272,41 @@ target/release/hmmibd-rs \
     -o tmp  -r 6.66667e-7
 ```
 
-2. Specifiy multi-threading options
+2. Calculate allele frequencies from a subset of the samples
+
+All samples are analyzed, but the allele frequencies are calculated only from
+the samples listed in `reference_panel.txt`. Sites without any genotype among
+those samples carry no allele frequency and are removed from the analysis; the
+number of removed sites is reported.
+
+```sh
+target/release/hmmibd-rs \
+    -i input.bcf --from-bcf \
+    --freq-samples1 reference_panel.txt \
+    -o tmp
+```
+
+Note this differs from `-f/--freq-file1`, which reads precomputed frequencies
+and requires the frequency file to contain exactly the sites that are left after
+the bcf filtering, in the same order, with positions of BCF records being
+0-based.
+
+3. Compare two populations given as two BCF files
+
+```sh
+target/release/hmmibd-rs \
+    -i population1.bcf -I population2.bcf --from-bcf \
+    --bcf-filter-config config.toml \
+    -o tmp
+```
+
+Only pairs of samples from different populations are analyzed. Each file is read
+and filtered separately, so the two sets of sites are usually not the same; the
+sites shared by both populations are used and their number is reported. Using
+the same filtering configuration for both files, and calling both populations
+jointly before splitting them, keeps as many shared sites as possible.
+
+4. Specifiy multi-threading options
 
 ```sh
 target/release/hmmibd-rs \
@@ -266,7 +321,7 @@ Please note there are two options for `--par-mode`. Mode 0 is generally suitable
 for small sample sizes, while mode 1 is better for large sample sizes. See the
 corresponding help message by running `hmmibd-rs -h`.
 
-3. Use recombination rate map
+5. Use recombination rate map
 
 ```sh
 # for data with a single chromsome
@@ -290,7 +345,7 @@ and plink files for
 [constant rate](testdata/sim_data/map/) and
 [nonuniform rate](https://bochet.gcc.biostat.washington.edu/beagle/genetic_maps/plink.GRCh38.map.zip)
 
-4. Filter IBD results before reporting
+6. Filter IBD results before reporting
 
 ```sh
 target/release/hmmibd-rs \
@@ -301,7 +356,7 @@ target/release/hmmibd-rs \
     -o tmp
 ```
 
-5. Use BCF as input from files
+7. Use BCF as input from files
 
    - Create a bcf_filt_config file. Details of this config files, see section
      `BCF Processing Details and BCF Filtering Configuration` section below.
@@ -339,7 +394,7 @@ target/release/hmmibd-rs \
        -o tmp
    ```
 
-6. Use BCF as input from stdin. This can be useful in certain cases:
+8. Use BCF as input from stdin. This can be useful in certain cases:
    - When genotype data exists in multiple files (such as each chromosome
      having a BCF file), you might want to use `bcf concat` to combine all these
      files and pipe the data to `hmmibd-rs` without writing the concatenated
@@ -358,7 +413,7 @@ target/release/hmmibd-rs \
     -o tmp
 ```
 
-7. Use binary genotype as input
+9. Use binary genotype as input
 
    - create bcf binary files
 
@@ -381,7 +436,7 @@ target/release/hmmibd-rs \
        -o tmp
    ```
 
-8. More complete examples
+10. More complete examples
 
 Please check the
 [hmmibd-rs-bench-empirical](https://github.com/bguo068/hmmibd-rs-bench-empirical)
@@ -403,7 +458,9 @@ Currently, `hmmibd-rs` assumes the following about the input BCF files:
   records.
 - Sites are sorted by position within each chromosome.
 - When using `--bcf-read-mode dominant-allele` (set by default), the `FORMAT/AD`
-  fields must be present in the BCF file.
+  fields must be present in the BCF file. A header that declares `AD` in both
+  `INFO` and `FORMAT` is handled: the two share one entry of the bcf string
+  dictionary, so `FORMAT/AD` cannot be looked up by its dictionary name alone.
 
 ### Part 1. Read through the bcf files and filter sites
 
@@ -437,6 +494,12 @@ Currently, `hmmibd-rs` assumes the following about the input BCF files:
        missing genotype for this site. Otherwise, the major allele is designated
        as the dominant allele representing the genotype for this sample at the
        current site.
+   - A missing allelic depth, that is a `.` instead of a `0`, is read as a depth
+     of zero. A sample whose depths are all missing therefore has a `total-AD`
+     of 0 and is treated as having a missing genotype for this site, instead of
+     the run failing. A record without any `FORMAT/AD` field makes all samples
+     missing at that site, which the `min_site_nonmissing` test below then
+     removes.
 
 4. Once the genotype represented by dominant alleles or missing status is
    determined for all samples at the current site, the following tests are used to
@@ -447,10 +510,15 @@ Currently, `hmmibd-rs` assumes the following about the input BCF files:
    - Calculate the minor allele frequency `maf` for the site using dominant
      allele genotypes. If `maf` < `min_maf`, the site will be filtered out.
    - Calculate the allele counts across samples for the site and determine the
-     major and minor alleles (for a site) as the alleles with the largest and
-     second largest sample counts. If `major_minor_alleles_must_be_snps` is set
-     to `true` in the configuration, the site will be filtered out if either the
-     major or minor allele is not a SNP.
+     major allele (for a site) as the allele with the largest sample count. If
+     `major_minor_alleles_must_be_snps` is set to `true` in the configuration,
+     the site will be filtered out unless every allele that is carried by at
+     least one sample is a SNP with respect to the major allele, that is it has
+     the length of the major allele, is not a spanning deletion `*`, and differs
+     from the major allele at no more than one position. Alleles that no sample
+     carries cannot become a genotype and do not filter the site out. At a
+     multiallelic site this therefore also tests the third and any further
+     allele, not only the two most frequent ones.
 
 ### Part 2. Iteratively Filter Sites and Samples by Genotype Missingness
 

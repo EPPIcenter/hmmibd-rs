@@ -1,5 +1,7 @@
 /target
 tmp*
+# artifacts written by the test suite
+_tmp*
 !tests/cmp_c_vs_rust.sh
 tests/*
 

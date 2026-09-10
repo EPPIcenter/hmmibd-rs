@@ -51,6 +51,25 @@ pub struct Arguments {
     )]
     pub freq_file2: Option<String>,
 
+    ///  Optional: File of sample ids used to restrict the calculation of allele
+    ///  frequencies for the first population. Format: no header, one id
+    ///  (string) per row. All samples of the genotype data are still analyzed;
+    ///  only the allele frequencies are calculated from this subset of samples.
+    ///  Sample ids that are not among the analyzed samples are ignored with a
+    ///  warning. Cannot be used together with `-f/--freq-file1`.
+    #[arg(long, conflicts_with = "freq_file1", help_heading = "input data")]
+    pub freq_samples1: Option<String>,
+
+    ///  Optional: same as `--freq-samples1` but for the second population.
+    ///  Cannot be used together with `-F/--freq-file2`.
+    #[arg(
+        long,
+        requires = "grp_data_file2",
+        conflicts_with = "freq_file2",
+        help_heading = "input data"
+    )]
+    pub freq_samples2: Option<String>,
+
     /// Optional: file of sample ids to exclude from all analysis. Format: no header, one
     /// id (string) per row. Note: b stands for "bad samples"
     #[arg(short = 'b', long, help_heading = "input data")]
@@ -122,13 +141,23 @@ pub struct Arguments {
     /// chromosomes are concatenated for sample filtering, and the user wants to
     /// split the filtering genotype into chromosomes and run each instance of
     /// hmmibd-rs on a chromosome in parallel.
-    #[arg(long, requires = "grp_from_bcf", help_heading = "output options")]
+    #[arg(
+        long,
+        requires = "grp_from_bcf",
+        conflicts_with = "grp_data_file2",
+        help_heading = "output options"
+    )]
     pub bcf_to_bin_file_by_chromosome: bool,
 
     /// Optional, valid only with the `--from-bcf` option. Similar to the
     /// `--bcf-to-bin-file-by-chromosome` option, but generates a single binary
     /// file containing all chromosomes.
-    #[arg(long, requires = "grp_from_bcf", help_heading = "output options")]
+    #[arg(
+        long,
+        requires = "grp_from_bcf",
+        conflicts_with = "grp_data_file2",
+        help_heading = "output options"
+    )]
     pub bcf_to_bin_file: bool,
 
     // ---- hmm options
@@ -168,6 +197,15 @@ pub struct Arguments {
     /// Optional: skip next snp(s) if too close to last one; in bp
     #[arg(long, default_value_t = 5, help_heading = "hmm options")]
     pub min_snp_sep: u32,
+
+    /// Optional: hold pi (the fraction of the genome in the IBD state) fixed at
+    /// this value instead of re-estimating it each EM iteration. Schaffner et
+    /// al. fix it at 0.5 when calling segments inside a selective sweep, to
+    /// remove the model's bias toward calling IBD for pairs that are already
+    /// highly related overall. Affects the transition matrix only; emission
+    /// probabilities still use the allele frequencies.
+    #[arg(long, help_heading = "hmm options")]
+    pub fix_pi: Option<f64>,
 
     /// Optional: covergence criteria: min delta pi
     #[arg(long, default_value_t = 0.001, help_heading = "hmm options")]
@@ -271,6 +309,8 @@ impl Arguments {
             bcf_filter_config: None,
             freq_file1: Some(String::from("c/samp_data/freqs_pf3k_Cambodia_13.txt")),
             freq_file2: Some(String::from("c/samp_data/freqs_pf3k_Ghana_13.txt")),
+            freq_samples1: None,
+            freq_samples2: None,
             max_iter: 5,
             bad_file: None,
             good_file: None,
@@ -288,6 +328,7 @@ impl Arguments {
                 rec_rate: 7.4e-7,
                 genome: None,
             },
+            fix_pi: None,
             fit_thresh_dpi: 0.001,
             fit_thresh_dk: 0.01,
             fit_thresh_drelk: 0.001,
@@ -313,6 +354,8 @@ impl Arguments {
             bcf_filter_config: Some(String::from("testdata/pf7_data/dom_gt_config.toml")),
             freq_file1: None,
             freq_file2: None,
+            freq_samples1: None,
+            freq_samples2: None,
             max_iter: 5,
             bad_file: None,
             good_file: None,
@@ -330,6 +373,7 @@ impl Arguments {
                 rec_rate: 7.4e-7,
                 genome: None,
             },
+            fix_pi: None,
             fit_thresh_dpi: 0.001,
             fit_thresh_dk: 0.01,
             fit_thresh_drelk: 0.001,

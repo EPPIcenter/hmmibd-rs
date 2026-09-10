@@ -527,7 +527,14 @@ impl<'a> HmmRunner<'a> {
         // trans_obs/pred: similar to Rabiner's 40b and 40c ;
         // count_ibd_fb/count_ibd_fb: Similar to Rabiner's Eq 39a and 40a, also
         // related to Eq 43a );
-        pi[0] = rs.count_ibd_fb / (rs.count_ibd_fb + rs.count_dbd_fb);
+        // `--fix-pi` holds pi at a user-set value (Schaffner et al. use 0.5 inside a
+        // sweep) instead of letting Baum-Welch re-estimate it from the pair's own
+        // overall relatedness, which otherwise biases the model toward calling IBD for
+        // already-related pairs and against it for distant ones.
+        match args.fix_pi {
+            Some(v) => pi[0] = v,
+            None => pi[0] = rs.count_ibd_fb / (rs.count_ibd_fb + rs.count_dbd_fb),
+        }
         ms.model.k_rec *= rs.trans_obs / rs.trans_pred;
 
         // cap k_rec

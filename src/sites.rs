@@ -112,6 +112,19 @@ impl SiteInfoRaw {
         self.chr_pos_vec.push(chr_pos);
     }
 
+    pub fn get_chrname_vec(&self) -> &[String] {
+        &self.chrname_vec[..]
+    }
+    pub fn get_chrname_map(&self) -> &HashMap<String, usize> {
+        &self.chrname_map
+    }
+    pub fn get_chr_pos_vec(&self) -> &[u32] {
+        &self.chr_pos_vec[..]
+    }
+    pub fn get_chr_idx_vec(&self) -> &[usize] {
+        &self.chr_idx_vec[..]
+    }
+
     pub fn into_sites_and_genome(self, rec_args: &RecombinationArg) -> Result<(Sites, Genome)> {
         match rec_args.genome.as_ref() {
             Some(genome_toml_path) => {
