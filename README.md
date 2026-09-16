@@ -63,6 +63,32 @@ This executable can be moved to any path specified in the `$PATH` environment
 variable for convenience. Otherwise, you can specify the path to the executable
 and run it.
 
+### Building a Docker image from local changes
+
+`Dockerfile.local` builds the source of the current working tree instead of
+cloning the upstream repository, so local changes end up in the image (the plain
+`Dockerfile` clones upstream and will not include uncommitted or branch-local
+changes). This is a multi-stage build that produces both the Rust binary
+(`hmmibd-rs`) and the C binary (`hmmIBD`).
+
+```sh
+docker build -f Dockerfile.local -t hmmibd-rs:eppicenter .
+```
+
+Verify the image:
+
+```sh
+docker run --rm hmmibd-rs:eppicenter hmmibd-rs --help
+```
+
+The image's working directory is `/data`, so mount a local directory there to
+process your data:
+
+```sh
+docker run --rm -v "$PWD:/data" hmmibd-rs:eppicenter \
+    hmmibd-rs -i /data/your_input.txt -o /data/out
+```
+
 ## Usage
 
 ### Command line options
